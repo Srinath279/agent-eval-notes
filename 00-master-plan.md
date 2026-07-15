@@ -22,7 +22,7 @@ Build **one reusable eval harness** that measures and improves multiple agents (
 | Tracing / datasets / annotation / scores | **Langfuse** | OSS/self-hostable, full trace capture, datasets + annotation queues + scores via API — portable across tiers (note 02) |
 | Orchestration / durability | **Temporal** (existing cluster) | Resume-where-died runs, declarative retries, schedules, no hand-rolled DLQ/cursor code (note 08) |
 | Compute | **Cloud Run** (Temporal workers + CI jobs), GCP | |
-| Judge LLM | **Vertex AI** (Claude on Vertex / Gemini) behind one `JudgeClient` | Swappable; batch prediction for backfills |
+| Judge LLM | **Multi-provider** behind one `JudgeClient`: Vertex AI (Claude on Vertex / Gemini), Anthropic API (direct), OpenAI | Provider chosen per agent config; each has its own batch path (§7) |
 | Warehouse / dashboards | **BigQuery** + Looker Studio | Long-horizon trends; Langfuse for per-trace drill-down |
 | Secrets / artifacts | Secret Manager / GCS | |
 | Methodology borrowed | τ-bench (simulated users, pass^k), Strands Evals (chaos + resilience evaluators, ActorSimulator concept) | notes 02–03 |
@@ -43,9 +43,9 @@ Build **one reusable eval harness** that measures and improves multiple agents (
 ┌──────────────────┐      └───────────▲────────────────┘
 │     Temporal     │                  │ called from activities
 │  Schedules       │      ┌───────────┴────────────────┐
-│  EvalRunWorkflow │─────▶│  Temporal workers          │──▶ Vertex AI (judge,
-│  TraceScoreWkfl  │      │  (Cloud Run service)       │     batch prediction)
-│  Canary/Shadow   │      └───────────┬────────────────┘
+│  EvalRunWorkflow │─────▶│  Temporal workers          │──▶ Judge providers (§7):
+│  TraceScoreWkfl  │      │  (Cloud Run service)       │     Vertex AI │ Anthropic
+│  Canary/Shadow   │      └───────────┬────────────────┘     API │ OpenAI
 └──────────────────┘                  │ export
         ▲                             ▼
    CI (GitHub Actions          BigQuery ──▶ Looker Studio /
@@ -61,8 +61,10 @@ Temporal replaces the original Cloud Scheduler / Pub/Sub-DLQ / Firestore-cursor 
 agent-evals/
 ├── core/
 │   ├── evaluator.py        # BaseEvaluator: score(trace|case) -> Score(name, value, comment)
-│   ├── judge.py            # JudgeClient (Vertex) + rubric versioning + bias controls
-│   │                       #   + score cache keyed (trace_id, evaluator, rubric_version)
+│   ├── judge.py            # JudgeClient interface + provider adapters
+│   │                       #   (vertex.py, anthropic.py, openai.py) + rubric versioning
+│   │                       #   + bias controls + score cache keyed
+│   │                       #   (trace_id, evaluator, rubric_version, judge_provider, judge_model)
 │   ├── langfuse_client.py  # traces, datasets, scores, dataset runs
 │   ├── schemas.py          # canonical Trace / ToolCall / Case / Score models
 │   ├── adapters/           # per-framework: raw Langfuse observations -> canonical Trace
@@ -102,7 +104,11 @@ trace_filter: {tags: ["support-agent"], environment: "prod"}
 online_sample_rate: 0.10
 repeats: 3                          # k for pass^k
 judge:
-  model: claude-sonnet-5            # pinned; stamped on every score
+  provider: anthropic               # anthropic | vertex | openai
+  model: claude-opus-4-8            # pinned; provider+model stamped on every score
+  fallback:                         # optional second judge if primary is down/rate-limited
+    provider: vertex
+    model: claude-opus-4-8          # Claude on Vertex uses the same bare model IDs
   rubric_versions: pinned           # from Langfuse Prompt Management
   daily_budget_usd: 25              # enforced by the judge activity
 evaluators: [goal_success, policy_compliance, faithfulness, tool_selection,
@@ -130,10 +136,23 @@ Governance (notes 05 §7, 06 §5–6):
 
 ## 7. Judge engineering
 
-- **Version everything**: rubrics in Langfuse Prompt Management; `judge_model + rubric_version` stamped in every score's metadata. Any judge/rubric change → rerun golden set; never mix epochs silently.
-- **Bias controls**: randomized orderings (position bias), structured JSON verdicts with reasoning-before-score, watch verbosity/self-preference.
-- **Calibration is a cadence, not a setup step**: measure judge-vs-human agreement (Cohen's κ > 0.8 before trusting a metric) at launch **and on a schedule** with fresh labels (note 06 §12).
-- **Cost discipline**: score cache (never re-pay), per-agent daily budget enforced in the judge activity, **Vertex batch prediction** for offline/backfill scoring at volume, cheap-tier subset online.
+**Multi-provider by design.** The `JudgeClient` is an interface with one adapter per provider — `vertex` (Claude on Vertex or Gemini), `anthropic` (direct API), `openai` — selected in the agent's `judge.provider` config. Evaluators never import a provider SDK; they call `JudgeClient.score(rubric, payload) -> StructuredVerdict`.
+
+| Provider | Client / auth | Model IDs (judge tiers) | Batch path (offline/backfill) |
+|---|---|---|---|
+| `anthropic` | `anthropic.Anthropic()`, API key in Secret Manager | `claude-opus-4-8` (primary), `claude-sonnet-5`, `claude-haiku-4-5` (cheap tier) | **Anthropic Message Batches API** — 50% price, ≤100k requests/batch |
+| `vertex` | `AnthropicVertex(project_id, region)` for Claude, or Gemini SDK; GCP ADC — no API key | Claude on Vertex uses the **same bare IDs** (`claude-opus-4-8`, `claude-sonnet-5`); Gemini IDs per Vertex catalog | **Vertex batch prediction** (Anthropic's Batches API is *not* available on Vertex) |
+| `openai` | OpenAI SDK, API key in Secret Manager | per OpenAI catalog | OpenAI Batch API |
+
+Rules that keep multi-provider sane:
+- **Version everything, including the provider**: rubrics in Langfuse Prompt Management; `judge_provider + judge_model + rubric_version` stamped in every score's metadata and in the cache key. Any judge/rubric/provider change → rerun golden set; never mix epochs silently.
+- **Scores are judge-specific, not interchangeable.** "faithfulness by claude-opus-4-8" and "faithfulness by gpt-x" are different measurements. Calibrate each provider+model against the human-labeled set independently (κ > 0.8 per judge), and never aggregate across judges in one dashboard series without a marked epoch.
+- **Structured verdicts everywhere**: force JSON with reasoning-before-score on every provider (Anthropic: `output_config.format` structured outputs; equivalents on Gemini/OpenAI) so parsing never depends on the provider's prose style.
+- **Self-preference bias**: never judge an agent with the same model family that powers it if an alternative is calibrated — this is a first-class reason to keep two providers live.
+- **Bias controls**: randomized orderings (position bias), watch verbosity bias.
+- **Fallback judge**: the optional `judge.fallback` config lets the worker degrade to a second provider on outage/rate-limit — scores written by the fallback carry its own provider/model stamp and count against the same daily budget.
+- **Calibration is a cadence, not a setup step**: re-measure judge-vs-human agreement on a schedule with fresh labels (note 06 §12).
+- **Cost discipline**: score cache (never re-pay), per-agent daily budget enforced in the judge activity, the provider-appropriate batch path above for offline/backfill volume, cheap-tier subset online.
 
 ## 8. Statistical rigor & release gating
 
@@ -141,7 +160,7 @@ Governance (notes 05 §7, 06 §5–6):
 - **Bootstrap confidence intervals** vs the baseline run; the CI gate fails on *significant regression*, not raw point differences on a 60-item set.
 - **Baseline-run registry**: explicit record of the current baseline and who/what promotes a new one.
 - **Deploy integration** (note 07 §A): the eval run is a required check in the deploy pipeline, not just CI; **canary rollout** compares the challenger's online scores to the incumbent before promotion (`CanaryCompareWorkflow` — durable timer over the score window); **auto-rollback triggers** tied to online score thresholds.
-- Report artifact (markdown/HTML) + **run manifest** (config snapshot, dataset version, judge model/rubric versions) to GCS, linked in the PR.
+- Report artifact (markdown/HTML) + **run manifest** (config snapshot, dataset version, judge provider/model/rubric versions) to GCS, linked in the PR.
 
 ## 9. Pipelines (all on Temporal)
 
@@ -201,14 +220,14 @@ LLM-judge evaluators with **rubric versioning + score caching + bias controls**;
 `TraceScoreWorkflow` + sampling (incl. 100% of suspicious traces); daily judge budgets; score write-back; low-score → annotation-queue loop; **user-feedback ingestion** (trace_id propagation); **ticket-system ground-truth backfill**; Cloud Monitoring alerts; nightly BigQuery export.
 
 **Phase 4 — scale-out & trust**
-Onboard agent #2 (**the reusability test**: YAML + adapter only); onboarding kit + adapter conformance tests; harness SLOs + graceful degradation; batch judging + Langfuse bulk export; **held-out set + golden-set coverage mapping**; failure clustering; Looker dashboards; drift detection; semver + epoch strategy; FinOps attribution.
+Onboard agent #2 (**the reusability test**: YAML + adapter only); onboarding kit + adapter conformance tests; harness SLOs + graceful degradation; batch judging (provider-appropriate path, §7) + Langfuse bulk export; **held-out set + golden-set coverage mapping**; failure clustering; Looker dashboards; drift detection; semver + epoch strategy; FinOps attribution.
 
 **Phase 5 — advanced modes & edges**
 Simulated-user testing; red-team suite (pass-100% gate); chaos injection + resilience evaluators; canary/shadow deploy gates + auto-rollback; RAG metrics + KB freshness; multilingual subsets; guardrail/rubric sharing; scheduled judge re-calibration; audit docs, DR, stakeholder scorecards; the data flywheel.
 
 ## 13. Standing cautions
 
-- **Pin and record judge model + rubric version on every score** — a silent judge upgrade shifts every metric.
+- **Pin and record judge provider + model + rubric version on every score** — a silent judge upgrade shifts every metric, and scores from different judges are different measurements.
 - **The adapter layer is the most underestimated piece** (note 05 §1) — without one canonical Trace schema, reusability dies in agent-specific parsing.
 - **If evaluators are buggy, every downstream metric is fiction** — the harness's own test suite is not optional.
 - **Don't tune prompts against the golden set** — that's what the held-out set is for.
