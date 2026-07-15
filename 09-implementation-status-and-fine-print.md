@@ -1,6 +1,13 @@
 # Implementation Status & Production Fine Print
 
-Phase 0 is **built**: [Srinath279/agent-evals](https://github.com/Srinath279/agent-evals) — schemas, `langfuse-generic` adapter, PII redaction, 3 evaluators (label_match / goal_success / tool_selection), multi-provider judge (anthropic + mock), sqlite score cache, pass^k runner + gate + run artifacts, `evals` CLI (no Temporal needed), `EvalRunWorkflow` + worker, 20 self-tests (mock judge, zero spend). Demo: 8 golden tickets × k=3, gate PASSED.
+**Code-complete through the phases** at [Srinath279/agent-evals](https://github.com/Srinath279/agent-evals) (v0.3.0, 50 tests):
+
+- **Phase 0–1**: schemas, `langfuse-generic` adapter + conformance kit, PII redaction, 13 evaluators (deterministic / trajectory / judge / safety / resilience), pass^k runner + fail-closed gate, deterministic trace IDs for idempotency, `evals seed-dataset` (redacted Langfuse upload).
+- **Phase 2**: Anthropic/Vertex/OpenAI judges, FallbackJudge (truthful stamping), BudgetedJudge (daily cap kill switch), baseline registry + bootstrap-CI regression gating, trace-replay mode, `evals calibrate` (kappa/pearson vs human labels).
+- **Phase 3**: online sampling (rate + 100% suspicious), cheap-tier `score_online`, `TraceScoreWorkflow`, annotation-queue push w/ graceful fallback, `post_user_feedback`, BigQuery export.
+- **Phase 4/5 code parts**: onboarding template + adapter conformance test, failure clustering in reports, red-team suite (`gate_mode: all`, `forbidden_content` — demo catches a live priority injection), `ChaosInjector` + `recovery_after_error`.
+
+**Remaining = infra wiring** (user-side): Langfuse projects/keys, real golden set seeding, Cloud Run Temporal workers + Schedules, Pub/Sub starter, BigQuery dataset + dashboards, CI gate wiring. Later code: batch judging APIs, simulated users, drift detection, canary/shadow workflows.
 
 This note records the **small production-scale details discovered while building** that no earlier note captures. Each one bites at scale if forgotten.
 
