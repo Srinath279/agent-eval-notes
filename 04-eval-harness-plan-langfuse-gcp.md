@@ -48,8 +48,13 @@ agent-evals/
 ├── core/
 │   ├── evaluator.py        # BaseEvaluator: score(trace|case) -> Score(name, value, comment)
 │   ├── judge.py            # JudgeClient (Vertex AI / configurable model)
+│   │                       #   + rubric versioning (Langfuse Prompt Mgmt), bias controls,
+│   │                       #   + score cache keyed (trace_id, evaluator, rubric_version)
 │   ├── langfuse_client.py  # fetch traces, datasets, post scores, dataset runs
-│   └── schemas.py          # Trace, ToolCall, Case, Score pydantic models
+│   ├── schemas.py          # Trace, ToolCall, Case, Score pydantic models
+│   ├── adapters/           # per-framework trace adapters: raw Langfuse observations
+│   │                       #   -> canonical Trace schema (langgraph.py, custom.py, ...)
+│   └── redaction.py        # PII redaction (Cloud DLP / regex+NER) before datasets & judges
 ├── evaluators/
 │   ├── deterministic/      # exact_match, json_schema_valid, label_match,
 │   │                       #   tool_called, latency_threshold, cost_threshold
@@ -60,11 +65,20 @@ agent-evals/
 │   └── session/            # goal_success, escalation_correctness, instruction_adherence
 ├── pipelines/
 │   ├── offline_run.py      # golden-set experiment runner (Langfuse dataset runs)
+│   │                       #   + k repeats per case (pass^k), bootstrap CIs vs baseline
 │   ├── online_worker.py    # sampled production-trace scorer
+│   │                       #   + retries/backoff, DLQ, checkpoint recovery, rate limits
+│   ├── backfill_labels.py  # join agent predictions to human-corrected ticket outcomes
+│   │                       #   (Zendesk/ServiceNow final category/priority = free ground truth)
 │   └── bq_export.py        # scores -> BigQuery
+├── baselines/              # baseline-run registry: which run is baseline, promotion record
+├── tests/                  # "evals for the evals": unit tests per evaluator,
+│                           #   fixture traces with known scores, mock JudgeClient (no spend)
 ├── configs/
 │   ├── support_agent.yaml
 │   └── ticket_analysis_agent.yaml
+├── metrics.md              # score registry: name, scale, direction, level, owner
+│                           #   (enforced naming so scores are comparable across agents)
 └── cli.py                  # `evals run --config support_agent.yaml --mode offline`
 ```
 
@@ -73,10 +87,16 @@ agent-evals/
 ```yaml
 # configs/support_agent.yaml
 agent: support-agent
+trace_adapter: langgraph              # maps this agent's trace shape -> canonical schema
 langfuse_dataset: support-agent-golden-v1
 task_fn: agents.support.invoke        # for online-style dataset runs in CI
 trace_filter: {tags: ["support-agent"], environment: "prod"}
 online_sample_rate: 0.10
+repeats: 3                            # k runs per case for pass^k / variance
+judge:
+  model: claude-sonnet-5              # pinned; recorded on every score
+  rubric_versions: pinned             # rubrics from Langfuse Prompt Management
+  daily_budget_usd: 25                # eval-cost cap for this agent
 evaluators:
   - name: goal_success           # LLM judge, session level
   - name: policy_compliance
@@ -137,10 +157,12 @@ Export all scores nightly to **BigQuery** (`bq_export.py`) for long-horizon tren
 
 ## 7. Rollout phases
 
-1. **Week 1–2 — foundation**: `core/` + deterministic evaluators + Langfuse client; seed support-agent golden dataset in Langfuse; offline experiment runner working locally.
-2. **Week 3–4 — judges + CI**: LLM-judge evaluators on Vertex AI, calibrated against a small human-labeled set from annotation queues; CI gate on the golden set; nightly Cloud Run Job.
-3. **Week 5–6 — online**: sampling worker + score write-back + low-score → annotation-queue loop; Cloud Monitoring alerts.
-4. **Week 7+ — scale out**: onboard ticket-analysis agent (should be *only* a new YAML + maybe 1–2 custom evaluators — that's the test that the harness is truly reusable); BigQuery export + dashboards; later add simulated-user multi-turn tests (τ-bench-style) as a new pipeline mode.
+1. **Week 1–2 — foundation**: `core/` (schemas, **trace adapter for the first agent**, **PII redaction**) + deterministic evaluators + Langfuse client; **harness self-tests** (fixture traces, mock judge) from day one; seed support-agent golden dataset in Langfuse; offline experiment runner working locally.
+2. **Week 3–4 — judges + CI**: LLM-judge evaluators on Vertex AI with **rubric versioning and score caching**, calibrated against a small human-labeled set from annotation queues (with **written labeling guidelines + inter-annotator agreement**); CI gate on the golden set using **k repeats + bootstrap CIs against a registered baseline run**; nightly Cloud Run Job. Separate **dev/staging/prod Langfuse projects** before anything touches prod data.
+3. **Week 5–6 — online**: sampling worker (retries, DLQ, checkpoints, rate limits, **daily judge-cost budget**) + score write-back + low-score → annotation-queue loop; **user-feedback ingestion** (app posts thumbs as Langfuse scores with propagated trace_id); **ticket-system ground-truth backfill** (human-corrected category/priority joined to agent predictions); Cloud Monitoring alerts.
+4. **Week 7+ — scale out**: onboard ticket-analysis agent (should be *only* a new YAML + a trace adapter + maybe 1–2 custom evaluators — that's the test that the harness is truly reusable); BigQuery export + dashboards + **drift detection**; then simulated-user multi-turn tests (τ-bench-style), **red-team/prompt-injection suite** (pass-100% gate), **chaos/fault injection**, and **shadow A/B evaluation** as new pipeline modes.
+
+See [05-harness-gaps.md](05-harness-gaps.md) for the full gap analysis behind these additions.
 
 ## Cautions
 
