@@ -53,3 +53,14 @@ The config field is plumbed through; enforcement lands in the Phase 3 judge acti
 - Vertex/OpenAI judges + fallback judge: raise clear "Phase 2" errors.
 - Online `TraceScoreWorkflow`, annotation-queue push, BQ export: Phase 3.
 - pass^k defined as "all thresholded metrics met on every repeat" — revisit when partial-credit metrics get their own pass definitions.
+
+## E2E wiring status (2026-07-15, AgentLoom local stack)
+
+The harness is wired into [AgentLoom](https://github.com/Srinath279/agentloom) and verified end-to-end, all local:
+- agent-evals installed as an editable uv dependency; `evals/` holds the config, task_fn, custom evaluator, golden sets.
+- **task_fn → Temporal → LoomWorkflow**: each eval execution runs the real 4-agent pipeline on the shared dev server; pipeline stages map to canonical ToolCalls so trajectory metrics grade run shape.
+- **Langfuse Prompt Management live**: `evals push-rubrics` seeded `evals/goal_success` with the rubric_version pinned in prompt config — fetched at eval time, cache keys unchanged (fine-print §8 honored). Golden set mirrored to Langfuse dataset `loom-brief-golden-v1`; scores post to real traces (session = workflow ID).
+- **Free local judge**: OpenAIJudge → Ollama (qwen2.5:14b) via OPENAI_BASE_URL; JSON-content fallback added for servers that ignore forced tool_choice.
+- **Verified**: 3-case gate PASSED (8 metrics), durable `EvalRunWorkflow` smoke COMPLETED (51s) with the agent-evals worker + agentloom worker on one Temporal dev server, baseline promoted.
+- Fixes shipped during wiring: evaluator-registration order (task_fn import must precede build_evaluators), cwd on sys.path for project-local eval packages, sync-activity executor in the Temporal worker.
+- **Still open**: judge calibration vs human labels (`evals calibrate`, annotation queue), a loom-specific goal_success rubric (current text is support-agent flavored), CI gate wiring, online TraceScoreWorkflow sampling of ChatWorkflow traffic.
