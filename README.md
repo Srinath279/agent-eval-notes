@@ -4,6 +4,7 @@ Notes on evaluating AI agents (support / ticket-analysis use cases), eval framew
 
 ## Index
 
+0. [**Master Plan (consolidated)**](00-master-plan.md) — the single build document merging all notes below: stack decisions, architecture on Temporal, package design, metrics governance, data strategy, judge engineering, statistical gating, pipelines, operations, and the phased roadmap with every gap item folded into its phase.
 1. [Agent Evaluation Fundamentals](01-agent-eval-fundamentals.md) — what agent evals are, the two levels of evaluation, full metrics catalog, what data to log, how to run evals.
 2. [Eval Frameworks Comparison](02-eval-frameworks-comparison.md) — Langfuse, LangSmith, Braintrust, Phoenix, DeepEval, promptfoo, Ragas, τ-bench; recommended stack for a support/ticket agent.
 3. [Strands Evals Deep Dive](03-strands-evals.md) — AWS Strands Evals SDK: evaluators, ActorSimulator, chaos testing; advantages and trade-offs vs. other frameworks.
@@ -11,3 +12,4 @@ Notes on evaluating AI agents (support / ticket-analysis use cases), eval framew
 5. [Harness Gap Analysis](05-harness-gaps.md) — critical pieces missing from the plan: trace adapters, PII redaction, judge versioning/caching, statistical rigor (pass^k, baselines), harness self-tests, ops reliability, governance, and later-phase items (red-team, chaos, drift, shadow A/B).
 6. [Production-Scale Requirements](06-production-scale.md) — what changes at scale: batch judging, Langfuse volume handling, FinOps, onboarding kit, versioned releases, harness SLOs, graceful degradation, golden-set hygiene, contamination control, failure clustering, audit/governance.
 7. [Remaining Considerations](07-remaining-considerations.md) — system edges: deploy-pipeline gates + canary/auto-rollback, multi-agent/handoff eval, RAG metrics, inline guardrails, multilingual coverage, synthetic cases, the data flywheel, backup/DR, audit documentation — and the recommendation to start building the vertical slice.
+8. [Durable Execution on Temporal](08-durable-execution-temporal.md) — decision to run the harness's long-running pipelines on the existing Temporal cluster: what it replaces (Scheduler, DLQ, cursors, retry code), workflow design for offline/online modes, and the rules that keep orchestration out of the evaluator library.
