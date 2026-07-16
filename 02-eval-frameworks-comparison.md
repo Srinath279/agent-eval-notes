@@ -11,13 +11,26 @@ Two kinds of tooling are needed: an **observability + tracing platform** (captur
 | **Braintrust** | Managed | Strong offline eval loops (Evals API), side-by-side diffing of prompt/model versions, good CI integration. |
 | **Arize Phoenix** | Open-source | OpenTelemetry-based tracing, built-in evals (relevance, hallucination, toxicity), good for production drift monitoring. |
 | **W&B Weave** | Managed | Traces + scorers + leaderboards per model version; good if already on Weights & Biases. |
+| **Opik (Comet)** | Open-source or cloud | Tracing + eval metrics + playground; fast-growing OSS alternative to Langfuse. |
+| **Galileo** | Managed | Agent-specific metrics out of the box (tool selection quality, action advancement/completion); enterprise-leaning. |
 
 ## 2. Eval harnesses / grading libraries
 
 - **DeepEval** (open-source, pytest-style) — easiest way to write agent evals as code. Built-in metrics that map to support use cases: answer relevancy, faithfulness/groundedness, hallucination, **task completion**, **tool correctness**, plus custom G-Eval rubrics ("was the reply empathetic and did it follow the refund policy?").
 - **promptfoo** (open-source, config-driven) — YAML test cases; great for regression-testing classification tasks like ticket triage (category, priority, sentiment) with exact expected labels. Also does red-teaming / prompt-injection testing.
 - **Ragas** — if the agent does RAG over a knowledge base / past tickets: grades retrieval quality (context precision/recall, faithfulness).
-- **OpenAI Evals / MLflow LLM Evaluate** — usable, but the above are more actively used for agent workloads.
+- **AgentEvals / openevals (LangChain)** — small OSS library purpose-built for **trajectory evaluation**: exact / unordered / superset / subset trajectory match plus an LLM trajectory judge. Directly implements the constraint-style matching in [10](10-multi-tool-subagent-json-eval.md); works on plain OpenAI-format message lists, no LangChain required.
+- **Vertex AI Gen AI Evaluation Service** — managed eval on GCP with **prebuilt agent/trajectory metrics** (`trajectory_exact_match`, `trajectory_in_order_match`, `trajectory_any_order_match`, `trajectory_precision/recall`, `single_tool_use`) plus rubric-based judges. Worth first-class consideration given the GCP + Vertex judge stack in [04](04-eval-harness-plan-langfuse-gcp.md).
+- **Inspect AI (UK AI Safety Institute)** — OSS Python framework for rigorous agent evals: solvers, scorers, **sandboxed tool execution**, multi-step agent tasks. Strong for safety/red-team suites.
+- **TruLens** — OSS "feedback functions" over traces (groundedness, relevance); OpenTelemetry-based.
+- **pydantic-evals** — lightweight, typed eval library from the Pydantic team; pairs naturally with a Pydantic-schema harness for **nested-JSON output checks**.
+- **OpenAI Evals / MLflow LLM Evaluate** — usable (MLflow 3 added agent/trace evals), but the above are more actively used for agent workloads.
+
+## 2b. Benchmarks to borrow methodology from
+
+- **BFCL (Berkeley Function Calling Leaderboard)** — *the* reference for **tool/function-calling accuracy**: single, parallel, and multi-turn tool calls, plus relevance detection (knowing when *not* to call a tool). Its AST-based argument checking is the model for grading tool-call arguments against 10 tools.
+- **GAIA / AgentBench / WebArena** — general multi-step agent benchmarks; useful for methodology (verifiable end states), not directly for a support agent.
+- **τ-bench / τ²-bench** — see §3 below.
 
 ## 3. Support-agent-specific benchmark: τ-bench (tau-bench)
 
