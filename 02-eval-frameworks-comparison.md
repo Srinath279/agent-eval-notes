@@ -7,7 +7,7 @@ Two kinds of tooling are needed: an **observability + tracing platform** (captur
 | Framework | Type | Why it fits a support agent |
 |---|---|---|
 | **Langfuse** | Open-source (self-hostable) or cloud | Full traces of every LLM/tool call, user feedback capture (thumbs on replies), LLM-as-judge evaluators on live traces, prompt versioning. Most popular OSS choice. |
-| **LangSmith** | Managed (LangChain team) | Best-in-class trace UI, datasets + regression testing, online evaluators, annotation queues for human review. Works without LangChain. |
+| **LangSmith** | Managed (LangChain team) | Best-in-class trace UI, datasets + regression testing, online evaluators, annotation queues for human review. Framework-agnostic — traces any stack (Google ADK, Anthropic SDK, Gemini, OpenAI Agents SDK, …) via wrappers/decorators or OpenTelemetry; LangChain/LangGraph is just the zero-config path. |
 | **Braintrust** | Managed | Strong offline eval loops (Evals API), side-by-side diffing of prompt/model versions, good CI integration. |
 | **Arize Phoenix** | Open-source | OpenTelemetry-based tracing, built-in evals (relevance, hallucination, toxicity), good for production drift monitoring. |
 | **W&B Weave** | Managed | Traces + scorers + leaderboards per model version; good if already on Weights & Biases. |
