@@ -34,3 +34,33 @@ Compute stays on GCP: Temporal workers run as a Cloud Run service (or GKE) impor
 ## What this does NOT change
 
 The build order from [07](07-remaining-considerations.md) stands: schemas → adapter → redaction → 3 evaluators → pass^k runner. Temporal is *how the runner executes*, not a new phase — the first vertical slice can even run the workflow on a local `temporal server start-dev` and point workers at the real cluster later.
+
+## Making it opt-in (config flag)
+
+Temporal is **off by default** and turned on by a single config flag, so rule 1 (the harness must stay runnable with no cluster) is enforced by construction rather than by discipline:
+
+```yaml
+pipeline:
+  engine: temporal            # local (default) | temporal
+  temporal:
+    address: localhost:7233
+    namespace: default
+    task_queue: agent-evals
+    cache_dir: runs/temporal-cache
+    max_concurrent_activities: 8
+```
+
+- **`engine: local`** (default) — `evals run` calls `run_offline` in-process. `temporalio` is never imported; the `temporal` extra need not be installed. This is the CI path (note 13/14) and what every existing config already does implicitly.
+- **`engine: temporal`** — `evals run` dispatches the durable `EvalRunWorkflow` to the cluster and blocks on the result; `evals worker --config <cfg>` starts a worker using the `pipeline.temporal` block. `--engine local|temporal` on `evals run` overrides the config per invocation.
+
+**Engine parity (both engines gate and emit the same artifacts).** The workflow only fans out the *scoring* (the durable, retry-worthy part) and returns the full per-case results; the **client** then runs the shared `aggregate_run()` — the exact function `run_offline` uses — to gate on thresholds, compare to baseline (`--baselines`), and write `report.md` / `scores.jsonl` / `manifest.json`. So:
+
+- Aggregation runs **client-side**, where `evals run` was invoked: artifacts land there (not on a worker), and `--baselines` reads the caller's filesystem. The two engines return the same `RunResult` and print the same summary — the only difference is that scoring is durable/retried.
+- Score serialization: `score_case` returns full `Score` dicts (not just `name→value`), so `scores.jsonl`, comments, and the judge stamp survive the round-trip. On very large golden sets, keep histories small with the rule-5 mitigations (chunked child workflows / `continue_as_new`).
+- A regression test (`tests/test_pipeline_engine.py::test_temporal_aggregation_matches_local`) asserts the reconstructed-from-wire aggregation equals the local run's `metric_means` / `gate_passed` / pass rates, and that all three artifacts are written — so parity can't silently drift.
+
+Structural guarantees keeping the extra optional:
+
+- `pipelines/__init__.py` exposes `is_available()` / `require_temporal()` that check the module spec **without importing temporalio**; the temporal path calls `require_temporal()` and fails with an actionable install message instead of an `ImportError`.
+- `cli.py` imports `pipelines.worker` / `pipelines.client` **only inside** the temporal branch, and those modules defer `from temporalio…` imports until after `require_temporal()`. So `import agent_evals.cli`, the whole test suite, and every `engine: local` run work with the extra absent.
+- `evals worker` refuses to start unless `pipeline.engine == temporal` — the flag is the single source of truth for whether the durable path is active.
